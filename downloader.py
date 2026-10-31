@@ -22,6 +22,10 @@ HEADERS = {
 }
 
 
+class TorrentResponse(Exception):
+    """The URL served a .torrent file instead of a book: it must go through the torrent client."""
+
+
 def _sanitize_ext(ext: str) -> str:
     cleaned = re.sub(r'[^a-z0-9]', '', (ext or '').lower())[:10]
     return cleaned or 'epub'
@@ -31,6 +35,9 @@ async def _check_redirect(response: httpx.Response) -> None:
     """httpx hook: block redirects to internal IPs (SSRF protection on redirects)."""
     if response.is_redirect:
         location = str(response.headers.get("location", ""))
+        if location:
+            # Location can be relative: resolve it against the URL just requested.
+            location = str(response.url.join(location))
         if location and not _is_safe_url(location):
             raise ValueError("Redirect blocked (SSRF)")
 
@@ -49,8 +56,15 @@ async def download_result(result: dict, progress_callback=None, max_bytes: int =
     if source == "prowlarr":
         if result.get("is_torrent"):
             return await _download_torrent(result)
-        else:
+        try:
             return await _download_direct(result["download_url"], ext, progress_callback, max_bytes=max_bytes)
+        except TorrentResponse:
+            # Safety net: the result was not flagged as a torrent at search time,
+            # but the indexer served a .torrent file. Hand it to the torrent client
+            # through Prowlarr instead of failing.
+            logger.info(f"Result {result.get('title')!r} is a torrent, switching to torrent flow")
+            result["is_torrent"] = True
+            return await _download_torrent(result)
 
     raise ValueError(f"Unknown source: {source!r}")
 
@@ -66,7 +80,9 @@ async def _download_direct(url: str, ext: str, progress_callback=None, max_bytes
     ) as client:
         async with client.stream("GET", url) as resp:
             resp.raise_for_status()
-            ctype = resp.headers.get("content-type", "").split(";")[0].strip()
+            ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            if ctype == "application/x-bittorrent":
+                raise TorrentResponse(ctype)
             if ctype and ctype not in VALID_CONTENT_TYPES:
                 raise RuntimeError(f"Unexpected content-type: {ctype!r}")
             total = int(resp.headers.get("content-length", 0))
@@ -108,8 +124,10 @@ async def _download_torrent(result: dict) -> str:
     download_path = os.environ.get("BOOKS_DOWNLOAD_PATH", "/downloads/books")
     timeout_minutes = int(os.environ.get("DOWNLOAD_TIMEOUT_MINUTES", "15"))
 
+    # Snapshot BEFORE the grab: the client can create the file within a second.
+    existing = watcher.snapshot(download_path)
     await prowlarr.grab(result["indexer_id"], result["guid"])
     path = await watcher.wait_for_file(
-        result["title"], download_path, timeout_minutes
+        result["title"], download_path, timeout_minutes, existing=existing
     )
     return path
