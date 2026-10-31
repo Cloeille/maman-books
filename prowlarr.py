@@ -41,10 +41,16 @@ async def search(query: str) -> list[dict]:
             continue
 
         magnet = item.get("magnetUrl") or ""
+        if not magnet and dl_url.lower().startswith("magnet:"):
+            magnet = dl_url
+        # Prowlarr's API exposes the protocol as "protocol" ("torrent" / "usenet").
+        # "downloadProtocol" is kept as a fallback for other API versions.
+        # Values can be null, so coerce to str before lower().
+        protocol = str(item.get("protocol") or item.get("downloadProtocol") or "").lower()
         is_torrent = (
-            dl_url.endswith(".torrent")
+            protocol == "torrent"
             or bool(magnet)
-            or item.get("downloadProtocol", "").lower() == "torrent"
+            or dl_url.lower().split("?", 1)[0].endswith(".torrent")
         )
 
         results.append({
@@ -73,11 +79,16 @@ def _guess_ext(item: dict) -> str:
 
 
 async def grab(indexer_id: int, guid: str) -> None:
-    """Tell Prowlarr to grab (send to download client) a result by guid."""
+    """Tell Prowlarr to grab (send to download client) a result by guid.
+
+    Prowlarr's API grabs a release with POST /api/v1/search (same resource as the
+    search, body = the release's guid + indexerId). There is no POST /api/v1/download
+    (it answers 405 Method Not Allowed).
+    """
     payload = {"guid": guid, "indexerId": indexer_id}
     async with _client() as client:
         try:
-            resp = await client.post("/api/v1/download", json=payload)
+            resp = await client.post("/api/v1/search", json=payload)
             resp.raise_for_status()
             logger.info(f"Prowlarr grab successful for guid={guid}")
         except Exception as e:

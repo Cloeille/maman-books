@@ -42,6 +42,10 @@ async def _check_redirect(response: httpx.Response) -> None:
     """httpx hook: block redirects to internal IPs (SSRF protection on redirects)."""
     if response.is_redirect:
         location = str(response.headers.get("location", ""))
+        if location:
+            # Location can be relative (e.g. "/search?q=..."): resolve it against
+            # the URL that was just requested before checking it.
+            location = str(response.url.join(location))
         if location and not _is_trusted_url(location):
             raise ValueError(f"Redirect blocked (SSRF): {_redact_url(location)}")
 

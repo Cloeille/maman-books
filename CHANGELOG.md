@@ -5,6 +5,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Torrent results from Prowlarr were skipped with `Unexpected content-type: 'application/x-bittorrent'`** (issue #4) — torrent detection read a non-existent `downloadProtocol` field; Prowlarr's API exposes `protocol`. Results are now correctly flagged as torrents (also when the URL is a magnet link or a `.torrent` URL with a query string, and when the protocol is `null`).
+- **Prowlarr grab returned `405 Method Not Allowed`** — the bot called `POST /api/v1/download`, which does not exist; a release is grabbed with `POST /api/v1/search` (guid + indexerId).
+- **Anna's Archive search always returned 0 results (`Redirect blocked (SSRF)`)** — a relative `Location` header (e.g. `/search?...`) was checked as if it were an absolute URL and rejected. It is now resolved against the requested URL first (private/loopback targets are still blocked). Same fix in `downloader.py`.
+- **Torrent downloads were never found by the folder watcher** — `watcher.py` only looked at files placed directly in the download folder and matched them on accent-sensitive words, so a release saved in its own sub-folder (or a file named with accents) was missed until the timeout. It now scans new folders recursively, accepts a folder whose name matches the title, ignores accents, skips incomplete files (`.!qB`, `.part`, …), waits until the file stops growing, and takes its folder snapshot *before* the download is requested (the client could create the file before the watcher started).
+- **VirusTotal scan always ended with "Analyse VirusTotal indisponible"** — the bot polled the analysis every 5 s, which exceeds the free tier quota (4 requests/min) and failed on the first `429`. It now polls every 20 s, waits and retries on `429` (honouring `Retry-After`), allows up to 4 minutes, and strips stray whitespace from the API key.
+- `downloader.py`: safety net — if a "direct" URL still answers `application/x-bittorrent`, the result is handed to the torrent flow (Prowlarr grab + download folder watcher) instead of being skipped.
+
+* * *
+
 ## [1.2.2] — 2026-03-09
 
 ### Fixed
